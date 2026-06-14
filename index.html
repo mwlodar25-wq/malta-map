@@ -109,14 +109,10 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
 
 /* ===== Legend ===== */
 .legend-control {
-  background: rgba(255,255,255,0.95);
-  padding: 12px 14px;
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
   font-size: 13px;
-  min-width: 170px;
-  max-height: calc(100vh - 120px);
-  overflow-y: auto;
+}
+.legend-control h3 {
+  display: none;
 }
 .legend-control h3 {
   font-size: 13px;
@@ -436,6 +432,25 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
       <span class="route-line" style="background:#3498db"></span>
       <span><span class="route-label">71</span> <span class="route-desc">Blue Grotto → Trzy Miasta</span></span>
     </label>
+  </div>
+
+  <!-- ===== Legend (w panelu, nie na mapie) ===== -->
+  <div class="panel-section" id="panel-legend">
+    <div class="legend-control"></div>
+  </div>
+
+  <div class="panel-section" style="padding:8px 20px;">
+    <button id="locate-btn" style="width:100%;padding:10px 14px;border:none;border-radius:8px;background:#3498db;color:#fff;cursor:pointer;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;transition:background 0.2s;">
+      <span id="locate-icon">📍</span> <span id="locate-text">Pokaż moją lokalizację</span>
+    </button>
+  </div>
+
+  <div class="panel-section">
+    <button id="distances-btn" style="width:100%;padding:8px 14px;border:1px solid #d0d5dd;border-radius:8px;background:#fff;cursor:pointer;font-size:13px;color:#555;display:flex;align-items:center;justify-content:center;gap:6px;transition:background 0.2s;">
+      <span>📏</span> <span>Pokaż odległości między miejscami</span>
+      <span id="dist-arrow" style="margin-left:auto;transition:transform 0.2s;">▼</span>
+    </button>
+    <div id="distances-content" style="display:none;margin-top:8px;font-size:12px;color:#555;max-height:200px;overflow-y:auto;"></div>
   </div>
 
   <div class="panel-section" style="padding:12px 20px;border-top:1px solid #e8ecf0;margin-top:auto;">
@@ -820,6 +835,46 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
     ferryLine.addTo(map);
   })();
 
+  // ===== Bus stop markers (circle markers for each unique stop) =====
+  var stopMarkers = [];
+  (function() {
+    var stopMap = {};
+    BUS_ROUTES.forEach(function(route) {
+      route.stops.forEach(function(stop) {
+        var key = stop.lat.toFixed(4) + ',' + stop.lng.toFixed(4);
+        if (!stopMap[key]) {
+          stopMap[key] = { name: stop.name, lat: stop.lat, lng: stop.lng, routes: [] };
+        }
+        if (stopMap[key].routes.indexOf(route.number) === -1) {
+          stopMap[key].routes.push(route.number);
+        }
+      });
+    });
+
+    Object.keys(stopMap).forEach(function(key) {
+      var stop = stopMap[key];
+      var color = stop.routes.length === 1 ? getBusColor(stop.routes[0]) : '#888';
+      var marker = L.circleMarker([stop.lat, stop.lng], {
+        radius: 5,
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.5,
+        weight: 2,
+        opacity: 0.8,
+        servedBy: stop.routes
+      });
+      marker.bindPopup(
+        '<div class="popup-title">' + "\U0001f68f" + ' ' + stop.name + '</div>'
+        + '<div class="popup-bus"><strong>Linie:</strong> '
+        + stop.routes.map(function(n) { return getBusBadge(n, getBusColor(n)); }).join(' ')
+        + '</div>',
+        { maxWidth: 250 }
+      );
+      stopMarkers.push(marker);
+      marker.addTo(map);
+    });
+  })();
+
   // ===================================================================
   // FILTER LOGIC
   // ===================================================================
@@ -854,6 +909,16 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
         else { if (map.hasLayer(route)) map.removeLayer(route); }
       }
     });
+
+    // Bus stop markers
+    if (typeof stopMarkers !== 'undefined') {
+      stopMarkers.forEach(function(marker) {
+        var routes = marker.options.servedBy;
+        var visible = routes.some(function(r) { return filters.bus[r]; });
+        if (visible) { if (!map.hasLayer(marker)) marker.addTo(map); }
+        else { if (map.hasLayer(marker)) map.removeLayer(marker); }
+      });
+    }
   }
 
   // ===== Wire up filter UI =====
@@ -900,6 +965,8 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
   // ===================================================================
 
   // Grupujemy miejsca według kategorii wyświetlania w legendzie
+  // ===== Legenda generowana w panelu bocznym (nie na mapie) =====
+
   var legendPlaceGroups = [
     {
       label: 'Atrakcja',
@@ -927,54 +994,39 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
     }
   ];
 
-  var LegendControl = L.Control.extend({
-    options: { position: 'bottomright' },
-    onAdd: function() {
-      var div = L.DomUtil.create('div', 'legend-control');
+  function generateLegend() {
+    var container = document.querySelector('#panel-legend .legend-control');
+    if (!container) return;
 
-      var html = '<h3>Legenda</h3><div class="legend-section"><h4>Miejsca</h4>';
+    var html = '<div class="legend-section"><h4>Miejsca</h4>';
 
-      legendPlaceGroups.forEach(function(group) {
-        var dotStyleAttr = group.dotStyle ? 'style="' + group.dotStyle + '"' : '';
-        html += '<div class="legend-item"><span class="' + group.dotClass + '" ' + dotStyleAttr + '></span> ' + group.label + '</div>';
+    legendPlaceGroups.forEach(function(group) {
+      var dotStyleAttr = group.dotStyle ? 'style="' + group.dotStyle + '"' : '';
+      html += '<div class="legend-item"><span class="' + group.dotClass + '" ' + dotStyleAttr + '></span> ' + group.label + '</div>';
 
-        // Dodaj nazwy miejsc w tej kategorii
-        PLACES.filter(group.placeFilter).forEach(function(place) {
-          var leftPad = '';
-          if (group.label === 'Atrakcja + Zagadka') {
-            leftPad = '<span class="legend-subdot split-sub"></span>';
-          } else {
-            var subColor = group.label === 'Atrakcja' ? '#2ecc71' : (group.label === 'Zagadka' ? '#e74c3c' : '#3498db');
-            leftPad = '<span class="legend-subdot" style="background:' + subColor + '"></span>';
-          }
-          html += '<div class="legend-place" data-place-id="' + place.id + '">'
-            + leftPad
-            + '<span>' + place.namePL + '</span>'
-            + '</div>';
-        });
+      PLACES.filter(group.placeFilter).forEach(function(place) {
+        var leftPad = '';
+        if (group.label === 'Atrakcja + Zagadka') {
+          leftPad = '<span class="legend-subdot split-sub"></span>';
+        } else {
+          var subColor = group.label === 'Atrakcja' ? '#2ecc71' : (group.label === 'Zagadka' ? '#e74c3c' : '#3498db');
+          leftPad = '<span class="legend-subdot" style="background:' + subColor + '"></span>';
+        }
+        html += '<div class="legend-place" data-place-id="' + place.id + '">'
+          + leftPad
+          + '<span>' + place.namePL + '</span>'
+          + '</div>';
       });
+    });
 
-      html += '</div><div class="legend-section"><h4>Linie autobusowe</h4>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#e67e22"></span> 202 Valletta → Mdina</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#9b59b6"></span> 203 Mdina → Dingli</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#1abc9c"></span> 222 Valletta → Ċirkewwa</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#1abc9c;border-top:2px dashed #1abc9c;height:0;"></span> ⛴️ Prom Ċirkewwa → Gozo</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#f1c40f"></span> 13 Valletta → Marsaxlokk</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#e74c3c"></span> 74 Marsaxlokk → Blue Grotto</div>'
-        + '<div class="legend-item"><span class="legend-line" style="background:#3498db"></span> 71 Blue Grotto → Trzy Miasta</div>'
-        + '</div>';
 
-      div.innerHTML = html;
-      return div;
-    }
-  });
+    container.innerHTML = html;
+  }
 
-  var legendControl = new LegendControl();
-  legendControl.addTo(map);
+  generateLegend();
 
-  // ===== Klikalne miejsca w legendzie — lataj do markera i otwieraj popup =====
-  // Używamy L.DomEvent, aby kliknięcie w legendę nie propagowało się na mapę
-  L.DomEvent.on(legendControl.getContainer(), 'click', function(e) {
+  // ===== Klikalne miejsca w legendzie panelu — lataj do markera i otwieraj popup =====
+  document.getElementById('panel-legend').addEventListener('click', function(e) {
     var placeEl = e.target.closest('.legend-place');
     if (!placeEl) return;
 
@@ -991,17 +1043,156 @@ body { display: flex; overflow: hidden; background: #f0f2f5; }
     }
 
     if (placeData && marker) {
-      // Lataj do miejsca z zoomem 15
       map.flyTo([placeData.lat, placeData.lng], 15, {
         duration: 1.2
       });
-
-      // Otwórz popup po zakończeniu animacji
       setTimeout(function() {
         marker.openPopup();
       }, 1300);
     }
   });
+  // ===================================================================
+  // GEOLOCALIZATION
+  // ===================================================================
+  var locateBtn = document.getElementById('locate-btn');
+  var locateIcon = document.getElementById('locate-icon');
+  var locateText = document.getElementById('locate-text');
+  var userMarker = null;
+  var userAccuracy = null;
+
+  function setLocateButtonBusy(busy) {
+    if (busy) {
+      locateBtn.style.background = '#85c1e9';
+      locateBtn.disabled = true;
+      locateIcon.textContent = '\u23f3';
+      locateText.textContent = 'Szukam...';
+    } else {
+      locateBtn.style.background = '#3498db';
+      locateBtn.disabled = false;
+      locateIcon.textContent = '\U0001f4cd';
+      locateText.textContent = 'Poka\u017c moj\u0105 lokalizacj\u0119';
+    }
+  }
+
+  if (locateBtn) {
+    locateBtn.addEventListener('click', function() {
+      if (!navigator.geolocation) {
+        alert('Geolokalizacja nie jest wspierana przez Twoj\u0105 przegl\u0105dark\u0119.');
+        return;
+      }
+      setLocateButtonBusy(true);
+
+      navigator.geolocation.getCurrentPosition(function(pos) {
+        var lat = pos.coords.latitude;
+        var lng = pos.coords.longitude;
+
+        // Remove previous markers
+        if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
+        if (userAccuracy) { map.removeLayer(userAccuracy); userAccuracy = null; }
+
+        // Accuracy circle
+        userAccuracy = L.circle([lat, lng], {
+          radius: pos.coords.accuracy,
+          color: '#3498db',
+          fillColor: '#3498db',
+          fillOpacity: 0.1,
+          weight: 1
+        }).addTo(map);
+
+        // Blue dot marker
+        userMarker = L.marker([lat, lng], {
+          icon: L.divIcon({
+            className: '',
+            html: '<div style="width:22px;height:22px;background:#3498db;border:3px solid #fff;border-radius:50%;box-shadow:0 0 12px rgba(52,152,219,0.6);"></div>',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11]
+          })
+        }).addTo(map);
+        userMarker.bindPopup('\U0001f4cd Twoja lokalizacja');
+
+        map.flyTo([lat, lng], 14, { duration: 1.5 });
+        setLocateButtonBusy(false);
+      }, function(err) {
+        alert('Nie uda\u0142o si\u0119 pobra\u0107 lokalizacji: ' + err.message);
+        setLocateButtonBusy(false);
+      }, {
+        enableHighAccuracy: true,
+        timeout: 10000
+      });
+    });
+  }
+
+  // ===================================================================
+  // DISTANCE STATISTICS
+  // ===================================================================
+  (function() {
+    var distBtn = document.getElementById('distances-btn');
+    var distContent = document.getElementById('distances-content');
+    var distArrow = document.getElementById('dist-arrow');
+    var distVisible = false;
+
+    if (!distBtn) return;
+
+    // Key distance pairs to show (origin, destination, label)
+    var distancePairs = [
+      { from: 'katedra', to: 'mdina', label: 'Valletta → Mdina' },
+      { from: 'mdina', to: 'katakumby', label: 'Mdina → Katakumby' },
+      { from: 'mdina', to: 'bluegrotto', label: 'Mdina → Blue Grotto' },
+      { from: 'katedra', to: 'bluegrotto', label: 'Valletta → Blue Grotto' },
+      { from: 'katedra', to: 'cirkewwa', label: 'Valletta → Ąirkewwa' },
+      { from: 'katedra', to: 'marsaxlokk', label: 'Valletta → Marsaxlokk' },
+      { from: 'marsaxlokk', to: 'bluegrotto', label: 'Marsaxlokk → Blue Grotto' },
+      { from: 'mdina', to: 'dingli', label: 'Mdina → Dingli Cliffs' },
+      { from: 'cirkewwa', to: 'ramla', label: 'Ąirkewwa → Ramla Bay (Gozo)' },
+      { from: 'katedra', to: 'ramla', label: 'Valletta → Ramla Bay (przez prom)' },
+    ];
+
+    // Helper to find place by id (also for custom coords)
+    var extraCoords = {
+      cirkewwa: { lat: 35.9869, lng: 14.3319 },
+      dingli: { lat: 35.8569, lng: 14.3828 }
+    };
+
+    function getCoords(id) {
+      for (var i = 0; i < PLACES.length; i++) {
+        if (PLACES[i].id === id) return PLACES[i];
+      }
+      return extraCoords[id] || null;
+    }
+
+    function formatDistance(meters) {
+      if (meters < 1000) return Math.round(meters) + ' m';
+      return (meters / 1000).toFixed(1) + ' km';
+    }
+
+    function calculateDistances() {
+      var html = '<table style="width:100%;border-collapse:collapse;">';
+      html += '<tr style="border-bottom:1px solid #eee;"><th style="text-align:left;padding:4px;font-weight:600;">Trasa</th><th style="text-align:right;padding:4px;font-weight:600;">Dystans</th></tr>';
+
+      distancePairs.forEach(function(pair) {
+        var from = getCoords(pair.from);
+        var to = getCoords(pair.to);
+        if (from && to) {
+          var d = map.distance([from.lat, from.lng], [to.lat, to.lng]);
+          html += '<tr style="border-bottom:1px solid #f0f0f0;">'
+            + '<td style="padding:4px;">' + pair.label + '</td>'
+            + '<td style="text-align:right;padding:4px;font-weight:500;">' + formatDistance(d) + '</td>'
+            + '</tr>';
+        }
+      });
+
+      html += '</table>';
+      html += '<div style="margin-top:6px;font-size:11px;color:#999;text-align:center;">Odległości w linii prostej</div>';
+      distContent.innerHTML = html;
+    }
+
+    distBtn.addEventListener('click', function() {
+      distVisible = !distVisible;
+      distContent.style.display = distVisible ? 'block' : 'none';
+      distArrow.style.transform = distVisible ? 'rotate(180deg)' : 'rotate(0deg)';
+      if (distVisible) calculateDistances();
+    });
+  })();
 
   // ===================================================================
   // MOBILE HAMBURGER
